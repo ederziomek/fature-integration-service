@@ -1,0 +1,173 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: indication-validation-service
+  namespace: fature
+  labels:
+    app: indication-validation-service
+    component: validation
+    version: v1.0.0
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: indication-validation-service
+  template:
+    metadata:
+      labels:
+        app: indication-validation-service
+        component: validation
+    spec:
+      containers:
+      - name: validation-api
+        image: fature/indication-validation-service:latest
+        ports:
+        - containerPort: 5000
+          name: http
+        env:
+        - name: CONFIG_SERVICE_URL
+          value: "http://config-service.fature.svc.cluster.local"
+        - name: FLASK_ENV
+          value: "production"
+        - name: LOG_LEVEL
+          value: "INFO"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/config
+          readOnly: true
+      volumes:
+      - name: config-volume
+        configMap:
+          name: validation-service-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: indication-validation-service
+  namespace: fature
+  labels:
+    app: indication-validation-service
+spec:
+  selector:
+    app: indication-validation-service
+  ports:
+  - port: 80
+    targetPort: 5000
+    protocol: TCP
+    name: http
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: validation-service-config
+  namespace: fature
+  labels:
+    app: indication-validation-service
+data:
+  config.yaml: |
+    # Configurações do serviço de validação
+    validation:
+      cache_ttl_seconds: 300
+      batch_size_limit: 100
+      timeout_seconds: 30
+    
+    logging:
+      level: INFO
+      format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    
+    audit:
+      enabled: true
+      retention_days: 365
+    
+    monitoring:
+      metrics_enabled: true
+      health_check_interval: 30
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: indication-validation-service-netpol
+  namespace: fature
+spec:
+  podSelector:
+    matchLabels:
+      app: indication-validation-service
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: integration-service
+    - podSelector:
+        matchLabels:
+          app: commission-service
+    ports:
+    - protocol: TCP
+      port: 5000
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: config-service
+    ports:
+    - protocol: TCP
+      port: 80
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: indication-validation-service-hpa
+  namespace: fature
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: indication-validation-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+
